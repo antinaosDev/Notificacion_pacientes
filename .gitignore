@@ -1,0 +1,16 @@
+# Ignorar carpetas de entorno virtual
+venv/
+env/
+.env/
+Lib/
+Scripts/
+__pycache__/
+
+# Ignorar archivos compilados de Python
+*.pyc
+*.pyo
+
+
+# Ignorar credenciales Firebase y archivos sensibles
+data-salud-firebase-adminsdk-fbsvc-7956c136fe.json
+.streamlit/secrets.toml
