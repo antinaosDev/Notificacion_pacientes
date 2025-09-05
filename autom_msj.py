@@ -617,17 +617,77 @@ def process_notifications(df, method="auto"):
     
     st.session_state.df = df
 
-# Ejecutar notificaciones
+# Ejecutar notificaciones AUTOMÁTICAMENTE
 if uploaded_file and not df.empty:
-    if mode == "Manual":
-        if st.button("🚀 Ejecutar Notificaciones", type="primary"):
-            process_notifications(df, send_method)
     
-    elif mode == "Automático":
-        if 'auto_executed' not in st.session_state:
-            st.info("🔄 Modo automático activado. Ejecutando notificaciones...")
-            st.session_state.auto_executed = True
+    # Botón para procesar automáticamente
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("🚀 INICIAR PROCESAMIENTO AUTOMÁTICO", type="primary", use_container_width=True):
+            st.session_state.auto_processing = True
+    
+    # Procesamiento automático
+    if st.session_state.get('auto_processing', False) or mode == "Automático":
+        
+        # Solo ejecutar una vez por sesión
+        if 'notifications_processed' not in st.session_state:
+            st.session_state.notifications_processed = True
+            
+            # Mensaje de inicio
+            st.markdown("---")
+            st.header("🤖 PROCESAMIENTO AUTOMÁTICO EN CURSO")
+            st.info("⚡ El sistema procesará automáticamente cada notificación, usuario por usuario...")
+            
+            # Procesar automáticamente
             process_notifications(df, send_method)
+            
+            # Resetear el estado
+            if 'auto_processing' in st.session_state:
+                del st.session_state.auto_processing
+        
+        else:
+            st.warning("⚠️ Las notificaciones ya fueron procesadas en esta sesión.")
+            if st.button("🔄 Procesar Nuevamente"):
+                if 'notifications_processed' in st.session_state:
+                    del st.session_state.notifications_processed
+                st.rerun()
+    
+    # Manual mode
+    elif mode == "Manual":
+        if st.button("📋 Vista Previa de Notificaciones", type="secondary"):
+            # Mostrar qué se va a procesar
+            today = datetime.now().date()
+            target_date = today + timedelta(days=2)
+            
+            to_notify = df[(df['¿NOTIFICADO?'] != True) & 
+                           (df['FECHA_ATENCION'].dt.date >= today) &
+                           (df['FECHA_ATENCION'].dt.date <= target_date)]
+            
+            changed_appointments = df[(df['¿CAMBIO DE HORA?'] == True) &
+                                      df['NUEVA_FECHA'].notnull() &
+                                      df['PROFESIONAL_REASIGNADO'].notnull() &
+                                      (df['FECHA_ATENCION'].dt.date >= today) &
+                                      (df['FECHA_ATENCION'].dt.date <= target_date)]
+            
+            total = len(to_notify) + len(changed_appointments)
+            
+            if total > 0:
+                st.info(f"📊 Se procesarán **{total}** notificaciones:")
+                st.write("**Recordatorios pendientes:**", len(to_notify))
+                st.write("**Cambios de cita:**", len(changed_appointments))
+                
+                # Mostrar lista de pacientes
+                if not to_notify.empty:
+                    st.write("👥 **Pacientes para recordatorio:**")
+                    for _, row in to_notify.iterrows():
+                        st.write(f"- {row['NOMBRE_PACIENTE']} ({row['TELEFONO']}) - {row['FECHA_ATENCION'].strftime('%d/%m/%Y')}")
+                
+                if not changed_appointments.empty:
+                    st.write("🔄 **Pacientes con cambios:**")
+                    for _, row in changed_appointments.iterrows():
+                        st.write(f"- {row['NOMBRE_PACIENTE']} ({row['TELEFONO']}) - Nueva fecha: {row['NUEVA_FECHA'].strftime('%d/%m/%Y')}")
+            else:
+                st.info("✅ No hay notificaciones pendientes en este momento")
 
 # Mostrar tabla y funciones adicionales
 if uploaded_file and not df.empty:
