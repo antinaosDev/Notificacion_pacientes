@@ -6,14 +6,9 @@ import json
 import os
 import time
 import threading
-
-# Check if we're in a cloud environment
-try:
-    import pywhatkit
-    WHATSAPP_AVAILABLE = True
-except ImportError:
-    WHATSAPP_AVAILABLE = False
-    st.warning("⚠️ WhatsApp functionality not available in cloud environment. Messages will be logged only.")
+import requests
+from urllib.parse import quote
+import base64
 
 # Configuración de página
 st.set_page_config(
@@ -21,6 +16,37 @@ st.set_page_config(
     page_icon="🏥",
     layout="wide"
 )
+
+# Detect environment and available messaging methods
+def detect_environment():
+    """Detect the current environment and available messaging capabilities"""
+    env_info = {
+        'is_cloud': any([
+            'STREAMLIT_SERVER_PORT' in os.environ,
+            'STREAMLIT_BROWSER_GATHER_USAGE_STATS' in os.environ,
+            os.environ.get('DISPLAY') == '',
+            'DISPLAY' not in os.environ
+        ]),
+        'selenium_available': False,
+        'api_available': False
+    }
+    
+    # Check for Selenium
+    if not env_info['is_cloud']:
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            env_info['selenium_available'] = True
+        except ImportError:
+            pass
+    
+    # API methods are always available
+    env_info['api_available'] = True
+    
+    return env_info
+
+# Initialize environment
+ENV_INFO = detect_environment()
 
 # CSS
 st.markdown("""
@@ -39,6 +65,8 @@ padding: 2rem; border-radius: 10px; margin-bottom: 2rem; color: white; text-alig
     margin: 10px 0;
     font-family: monospace;
     white-space: pre-wrap;
+    max-height: 200px;
+    overflow-y: auto;
 }
 .success-message {
     background-color: #d4edda;
@@ -56,8 +84,174 @@ padding: 2rem; border-radius: 10px; margin-bottom: 2rem; color: white; text-alig
     border-radius: 5px;
     margin: 5px 0;
 }
+.method-card {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 15px;
+    margin: 10px 0;
+    background-color: #f9f9f9;
+}
+.method-available {
+    border-left: 4px solid #28a745;
+}
+.method-unavailable {
+    border-left: 4px solid #dc3545;
+}
 </style>
 """, unsafe_allow_html=True)
+
+# WhatsApp Selenium Class
+class WhatsAppSelenium:
+    def __init__(self):
+        self.driver = None
+        self.is_logged_in = False
+    
+    def setup_driver(self):
+        """Setup Chrome driver for WhatsApp Web"""
+        if ENV_INFO['is_cloud']:
+            return False, "Selenium no disponible en entorno cloud"
+        
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            
+            options = Options()
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--window-size=1920,1080')
+            
+            # Optional: run in headless mode (uncomment next line)
+            # options.add_argument('--headless')
+            
+            self.driver = webdriver.Chrome(options=options)
+            return True, "Driver configurado exitosamente"
+        except Exception as e:
+            return False, f"Error configurando driver: {str(e)}"
+    
+    def login_whatsapp(self):
+        """Navigate to WhatsApp Web and wait for QR scan"""
+        if not self.driver:
+            return False, "Driver no inicializado"
+        
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            
+            self.driver.get("https://web.whatsapp.com")
+            
+            # Wait for QR code or main interface
+            wait = WebDriverWait(self.driver, 60)
+            
+            # Check if already logged in or need to scan QR
+            try:
+                # Wait for either QR code or chat list
+                wait.until(
+                    lambda driver: driver.find_element(By.CSS_SELECTOR, '[data-testid="qr-code"]') or 
+                                 driver.find_element(By.CSS_SELECTOR, '[data-testid="chat-list"]')
+                )
+                
+                # Check if we're in the main interface
+                if self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="chat-list"]'):
+                    self.is_logged_in = True
+                    return True, "Ya conectado a WhatsApp Web"
+                else:
+                    return False, "Necesita escanear código QR en WhatsApp Web"
+                    
+            except Exception as e:
+                return False, f"Error esperando login: {str(e)}"
+                
+        except Exception as e:
+            return False, f"Error accediendo a WhatsApp Web: {str(e)}"
+    
+    def send_message(self, phone, message):
+        """Send message via WhatsApp Web"""
+        if not self.driver or not self.is_logged_in:
+            return False, "WhatsApp Web no está conectado"
+        
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.common.keys import Keys
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            
+            # Format phone number
+            if not phone.startswith("+"):
+                phone = "+56" + str(phone)
+            
+            # Navigate to chat
+            url = f"https://web.whatsapp.com/send?phone={phone.replace('+', '')}"
+            self.driver.get(url)
+            
+            wait = WebDriverWait(self.driver, 30)
+            
+            # Wait for message input box
+            message_box = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="message-composer"] [contenteditable="true"]'))
+            )
+            
+            # Clear and send message
+            message_box.clear()
+            message_box.send_keys(message)
+            
+            # Find and click send button
+            send_button = wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="send"]'))
+            )
+            send_button.click()
+            
+            time.sleep(2)  # Wait for message to send
+            return True, "Mensaje enviado via Selenium"
+            
+        except Exception as e:
+            return False, f"Error enviando mensaje: {str(e)}"
+    
+    def close(self):
+        """Close the browser"""
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+            self.is_logged_in = False
+
+# WhatsApp API alternatives (for cloud environments)
+class WhatsAppAPI:
+    @staticmethod
+    def send_via_api_link(phone, message):
+        """Generate WhatsApp API link for manual sending"""
+        if not phone.startswith("+"):
+            phone = "+56" + str(phone)
+        
+        encoded_message = quote(message)
+        phone_clean = phone.replace("+", "")
+        
+        whatsapp_url = f"https://api.whatsapp.com/send?phone={phone_clean}&text={encoded_message}"
+        
+        return True, f"Link generado: {whatsapp_url}"
+    
+    @staticmethod
+    def send_via_webhook(phone, message, webhook_url=None):
+        """Send via external webhook service (placeholder for custom implementation)"""
+        if not webhook_url:
+            return False, "Webhook URL no configurada"
+        
+        try:
+            payload = {
+                "phone": phone,
+                "message": message,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            if response.status_code == 200:
+                return True, "Mensaje enviado via webhook"
+            else:
+                return False, f"Error webhook: {response.status_code}"
+        except Exception as e:
+            return False, f"Error webhook: {str(e)}"
 
 # Función cargar datos
 @st.cache_data
@@ -99,19 +293,38 @@ def save_log(log_entry):
     except Exception as e:
         st.error(f"Error al guardar log: {str(e)}")
 
-# Enviar WhatsApp (modificado para cloud)
-def send_whatsapp(phone, message):
-    if not WHATSAPP_AVAILABLE:
-        # Simular envío en ambiente cloud/headless
-        return True, "Mensaje simulado (ambiente headless/cloud)"
+# Main sending function with multiple methods
+def send_whatsapp_message(phone, message, method="auto"):
+    """Send WhatsApp message using available method"""
     
-    try:
-        if not str(phone).startswith("+"):
-            phone = "+56" + str(phone)
-        pywhatkit.sendwhatmsg_instantly(phone, message, tab_close=True, wait_time=10)
-        return True, "Mensaje enviado por WhatsApp"
-    except Exception as e:
-        return False, f"Error WhatsApp: {str(e)}"
+    if method == "selenium" and ENV_INFO['selenium_available']:
+        if 'whatsapp_selenium' not in st.session_state:
+            st.session_state.whatsapp_selenium = WhatsAppSelenium()
+        
+        selenium_client = st.session_state.whatsapp_selenium
+        if not selenium_client.driver:
+            success, msg = selenium_client.setup_driver()
+            if not success:
+                return False, msg
+            success, msg = selenium_client.login_whatsapp()
+            if not success:
+                return False, msg
+        
+        return selenium_client.send_message(phone, message)
+    
+    elif method == "api_link":
+        return WhatsAppAPI.send_via_api_link(phone, message)
+    
+    elif method == "webhook":
+        webhook_url = st.session_state.get('webhook_url', None)
+        return WhatsAppAPI.send_via_webhook(phone, message, webhook_url)
+    
+    else:
+        # Auto mode - use best available method
+        if ENV_INFO['selenium_available'] and not ENV_INFO['is_cloud']:
+            return send_whatsapp_message(phone, message, "selenium")
+        else:
+            return send_whatsapp_message(phone, message, "api_link")
 
 # Mensajes
 def create_reminder_message(row):
@@ -168,21 +381,69 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Status del sistema
-if not WHATSAPP_AVAILABLE:
-    st.warning("🚨 **MODO DEMO**: La aplicación está ejecutándose en modo demostración. Los mensajes no se enviarán realmente, pero se registrarán en los logs.")
+# Environment Status
+st.header("🔧 Estado del Sistema")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if ENV_INFO['is_cloud']:
+        st.markdown('<div class="method-card method-unavailable">🌐 <strong>Entorno:</strong> Cloud/Servidor<br>📱 <strong>WhatsApp:</strong> Via API Links</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="method-card method-available">💻 <strong>Entorno:</strong> Local<br>📱 <strong>WhatsApp:</strong> Selenium disponible</div>', unsafe_allow_html=True)
+
+with col2:
+    if ENV_INFO['selenium_available']:
+        st.markdown('<div class="method-card method-available">🤖 <strong>Selenium:</strong> Disponible<br>🔗 <strong>Método:</strong> WhatsApp Web directo</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="method-card method-unavailable">🤖 <strong>Selenium:</strong> No disponible<br>🔗 <strong>Método:</strong> Links de API</div>', unsafe_allow_html=True)
+
+with col3:
+    st.markdown('<div class="method-card method-available">🔗 <strong>API Links:</strong> Siempre disponible<br>📤 <strong>Método:</strong> Enlaces manuales</div>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Configuración")
+    
+    # Method selection
+    if ENV_INFO['selenium_available'] and not ENV_INFO['is_cloud']:
+        send_method = st.selectbox(
+            "Método de envío:",
+            ["auto", "selenium", "api_link"],
+            format_func=lambda x: {
+                "auto": "🔄 Automático (mejor disponible)",
+                "selenium": "🤖 Selenium (WhatsApp Web)",
+                "api_link": "🔗 API Links (manual)"
+            }[x]
+        )
+    else:
+        send_method = "api_link"
+        st.info("🔗 Método: API Links (único disponible)")
+    
+    # Webhook configuration (optional)
+    if st.checkbox("Configurar Webhook personalizado"):
+        webhook_url = st.text_input("URL del Webhook:", placeholder="https://tu-webhook.com/whatsapp")
+        if webhook_url:
+            st.session_state.webhook_url = webhook_url
+            send_method = "webhook"
+    
     mode = st.radio("Modo de ejecución:", ("Manual", "Automático"))
     
-    st.header("📊 Estado del Sistema")
-    if WHATSAPP_AVAILABLE:
-        st.success("✅ WhatsApp disponible")
-    else:
-        st.warning("⚠️ Modo demo activo")
+    # Selenium controls
+    if ENV_INFO['selenium_available'] and send_method in ["auto", "selenium"]:
+        st.header("🤖 Control de Selenium")
+        if st.button("🔄 Reiniciar WhatsApp Web"):
+            if 'whatsapp_selenium' in st.session_state:
+                st.session_state.whatsapp_selenium.close()
+                del st.session_state.whatsapp_selenium
+            st.success("Selenium reiniciado")
+        
+        if st.button("❌ Cerrar navegador"):
+            if 'whatsapp_selenium' in st.session_state:
+                st.session_state.whatsapp_selenium.close()
+                del st.session_state.whatsapp_selenium
+                st.success("Navegador cerrado")
     
+    st.header("📊 Registro")
     show_logs = st.button("📋 Ver Registros")
     
     if st.button("🗑️ Limpiar Logs"):
@@ -214,14 +475,15 @@ if uploaded_file:
             cambios = len(df[df['¿CAMBIO DE HORA?'] == True])
             st.metric("Con Cambios", cambios)
 
-# Función principal mejorada
-def process_notifications(df):
+# Función principal
+def process_notifications(df, method="auto"):
     if df.empty:
         st.error("No hay datos para procesar")
         return
     
     success_count = 0
     error_count = 0
+    links_generated = []
     today = datetime.now().date()
     target_date = today + timedelta(days=2)
     
@@ -246,7 +508,7 @@ def process_notifications(df):
         st.info("📋 No hay citas que requieran notificación en este momento")
         return
     
-    st.info(f"📤 Procesando {total_to_process} notificaciones...")
+    st.info(f"📤 Procesando {total_to_process} notificaciones usando método: **{method}**")
     processed = 0
     
     # Procesar recordatorios
@@ -259,15 +521,22 @@ def process_notifications(df):
         with st.expander(f"📱 Mensaje para {row['NOMBRE_PACIENTE']}", expanded=False):
             st.markdown(f'<div class="message-preview">{message}</div>', unsafe_allow_html=True)
         
-        success, result = send_whatsapp(phone, message)
+        success, result = send_whatsapp_message(phone, message, method)
         
         if success:
             df.at[idx, '¿NOTIFICADO?'] = True
             df.at[idx, 'FECHA_NOTIFICACION'] = datetime.now().date()
             df.at[idx, 'HORA_NOTIFICACION'] = datetime.now().strftime("%H:%M:%S")
-            df.at[idx, 'METODO_NOTIFICACION'] = "WhatsApp" if WHATSAPP_AVAILABLE else "Demo"
+            df.at[idx, 'METODO_NOTIFICACION'] = method
             success_count += 1
-            st.markdown(f'<div class="success-message">✅ Enviado a {row["NOMBRE_PACIENTE"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="success-message">✅ {row["NOMBRE_PACIENTE"]}: {result}</div>', unsafe_allow_html=True)
+            
+            if "Link generado:" in result:
+                links_generated.append({
+                    'patient': row['NOMBRE_PACIENTE'],
+                    'phone': phone,
+                    'link': result.replace("Link generado: ", "")
+                })
         else:
             error_count += 1
             st.markdown(f'<div class="error-message">❌ Error enviando a {row["NOMBRE_PACIENTE"]}: {result}</div>', unsafe_allow_html=True)
@@ -277,17 +546,16 @@ def process_notifications(df):
             "patient": row['NOMBRE_PACIENTE'],
             "phone": phone,
             "type": "Recordatorio",
-            "method": "WhatsApp" if WHATSAPP_AVAILABLE else "Demo",
+            "method": method,
             "message": message,
-            "status": "Enviado" if success else "Error"
+            "status": "Enviado" if success else "Error",
+            "result": result
         }
-        if not success:
-            log_entry["error"] = result
         save_log(log_entry)
         
         processed += 1
         progress_bar.progress(processed / total_to_process)
-        time.sleep(0.5)  # Pausa reducida para demo
+        time.sleep(0.5)
     
     # Procesar cambios de cita
     for idx, row in changed_appointments.iterrows():
@@ -295,19 +563,25 @@ def process_notifications(df):
         message = create_change_message(row)
         phone = row['TELEFONO']
         
-        # Mostrar preview del mensaje
         with st.expander(f"📱 Cambio de cita para {row['NOMBRE_PACIENTE']}", expanded=False):
             st.markdown(f'<div class="message-preview">{message}</div>', unsafe_allow_html=True)
         
-        success, result = send_whatsapp(phone, message)
+        success, result = send_whatsapp_message(phone, message, method)
         
         if success:
             df.at[idx, 'FECHA_NOTIFICACION'] = datetime.now().date()
             df.at[idx, 'HORA_NOTIFICACION'] = datetime.now().strftime("%H:%M:%S")
-            df.at[idx, 'METODO_NOTIFICACION'] = "WhatsApp" if WHATSAPP_AVAILABLE else "Demo"
+            df.at[idx, 'METODO_NOTIFICACION'] = method
             df.at[idx, '¿CAMBIO DE HORA?'] = False
             success_count += 1
-            st.markdown(f'<div class="success-message">✅ Cambio enviado a {row["NOMBRE_PACIENTE"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="success-message">✅ {row["NOMBRE_PACIENTE"]}: {result}</div>', unsafe_allow_html=True)
+            
+            if "Link generado:" in result:
+                links_generated.append({
+                    'patient': row['NOMBRE_PACIENTE'],
+                    'phone': phone,
+                    'link': result.replace("Link generado: ", "")
+                })
         else:
             error_count += 1
             st.markdown(f'<div class="error-message">❌ Error enviando cambio a {row["NOMBRE_PACIENTE"]}: {result}</div>', unsafe_allow_html=True)
@@ -317,12 +591,11 @@ def process_notifications(df):
             "patient": row['NOMBRE_PACIENTE'],
             "phone": phone,
             "type": "Cambio de Cita",
-            "method": "WhatsApp" if WHATSAPP_AVAILABLE else "Demo",
+            "method": method,
             "message": message,
-            "status": "Enviado" if success else "Error"
+            "status": "Enviado" if success else "Error",
+            "result": result
         }
-        if not success:
-            log_entry["error"] = result
         save_log(log_entry)
         
         processed += 1
@@ -333,19 +606,28 @@ def process_notifications(df):
     status_text.text("✅ Proceso completado")
     
     st.success(f"📊 **Resultados del proceso:**\n- ✅ Exitosos: {success_count}\n- ❌ Errores: {error_count}")
+    
+    # Show generated links if any
+    if links_generated:
+        st.header("🔗 Enlaces de WhatsApp Generados")
+        st.info("Haga clic en los enlaces para abrir WhatsApp con el mensaje pre-cargado:")
+        
+        for link_info in links_generated:
+            st.markdown(f"**{link_info['patient']}** ({link_info['phone']}): [Abrir WhatsApp]({link_info['link']})")
+    
     st.session_state.df = df
 
-# Ejecutar manual
+# Ejecutar notificaciones
 if uploaded_file and not df.empty:
     if mode == "Manual":
         if st.button("🚀 Ejecutar Notificaciones", type="primary"):
-            process_notifications(df)
+            process_notifications(df, send_method)
     
     elif mode == "Automático":
         if 'auto_executed' not in st.session_state:
             st.info("🔄 Modo automático activado. Ejecutando notificaciones...")
             st.session_state.auto_executed = True
-            process_notifications(df)
+            process_notifications(df, send_method)
 
 # Mostrar tabla y funciones adicionales
 if uploaded_file and not df.empty:
@@ -410,7 +692,7 @@ else:
 
 # Pie de página
 st.markdown("---")
-st.markdown('<div style="text-align:center;color:#666;"><p>Desarrollado para análisis y gestión de datos médicos</p></div>', unsafe_allow_html=True)
+st.markdown('<div style="text-align:center;color:#666;"><p>Sistema de Notificaciones Médicas - Desarrollado para análisis y gestión de datos médicos</p></div>', unsafe_allow_html=True)
 
 # Información del desarrollador
 with st.container():
@@ -423,3 +705,13 @@ with st.container():
                 🌐 Más información en: <a href="https://alain-antinao-s.notion.site/Alain-C-sar-Antinao-Sep-lveda-1d20a081d9a980ca9d43e283a278053e" target="_blank" style="color: #4A90E2;">Mi página personal</a>
             </div>
         """, unsafe_allow_html=True)
+
+# Cleanup on app close
+import atexit
+
+def cleanup():
+    """Clean up selenium driver on app close"""
+    if 'whatsapp_selenium' in st.session_state:
+        st.session_state.whatsapp_selenium.close()
+
+atexit.register(cleanup)
