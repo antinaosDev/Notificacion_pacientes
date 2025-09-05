@@ -102,8 +102,8 @@ def save_log(log_entry):
 # Enviar WhatsApp (modificado para cloud)
 def send_whatsapp(phone, message):
     if not WHATSAPP_AVAILABLE:
-        # Simular envío en ambiente cloud
-        return True, "Mensaje simulado (ambiente cloud)"
+        # Simular envío en ambiente cloud/headless
+        return True, "Mensaje simulado (ambiente headless/cloud)"
     
     try:
         if not str(phone).startswith("+"):
